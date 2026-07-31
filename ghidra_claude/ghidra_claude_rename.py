@@ -22,18 +22,14 @@ API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-4-6"          # Model List (https://platform.claude.com/docs/en/about-claude/model-deprecations)
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 1024
-MAX_FUNCTIONS = 50                    # Cost safety margin: the upper limit on the number of functions processed per execution
+MAX_FUNCTIONS = 100                    # Cost safety margin: the upper limit on the number of functions processed per execution
 SKIP_LIBRARY_FUNCTIONS = True
 DECOMPILE_TIMEOUT_SECONDS = 30
 
 SYSTEM_PROMPT = (
-    "You are an expert reverse engineering assistant. Analyze Ghidra pseudo-C and suggest descriptive names for the function and variables based on logical behavior."
-    "\nRules:\n"
-    "1. Target: Rename generic Ghidra artifacts (e.g., param_1, uVar2, FUN_140025034)."
-    "2. Accuracy: Omit names if unsure. NEVER invent variables."
-    "3. Format: Output ONLY a raw JSON object. NO markdown, NO backticks (```), NO explanations."
-    "\nStrict Shape:"
-    '\n{"function_name": "suggested_name", "variables": {"old_name1": "new_name1", "old_name2": "new_name2"}}\n'
+    "You are Reverse-engineering assistant. Given Ghidra pseudo-C, infer descriptive names for the function and its generic vars (param_1, uVar2, FUN_...) from logic.\n"
+    "Omit any name you're unsure of; never invent variables. Respond with ONLY raw JSON, no markdown/backticks/explanations, in this exact shape:\n"
+    '\t{"function_name":"name","variables":{"old1":"new1", "old2":"new2"}}'
 )
 
 # Read Claude API Key in .api file
