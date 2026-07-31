@@ -42,6 +42,7 @@ Keep the two files from this repository together in the same folder. If the path
 ```
 ghidra-claude/
 ├── .api                      # fill in with your real key before use
+├── ghidra_prompt_advanced.md
 └── ghidra_claude_rename.py
 ```
 
