@@ -26,11 +26,41 @@ MAX_FUNCTIONS = 100                    # Cost safety margin: the upper limit on 
 SKIP_LIBRARY_FUNCTIONS = True
 DECOMPILE_TIMEOUT_SECONDS = 30
 
+# Cache control state: tracked across calls so we don't repeatedly retry
+# a request shape the API has already rejected in this run.
+# None  = not yet tested
+# True  = cache_control accepted by the API (though it may still be a no-op
+#         if the system prompt is below the model's minimum cacheable size)
+# False = cache_control caused a request-level failure; fall back permanently
+_CACHE_CONTROL_STATE = {"supported": None}
+
 SYSTEM_PROMPT = (
-    "You are Reverse-engineering assistant. Given Ghidra pseudo-C, infer descriptive names for the function and its generic vars (param_1, uVar2, FUN_...) from logic.\n"
+    "You are a Senior Reverse-engineering assistant. Given Ghidra pseudo-C, infer descriptive names for the function and its generic vars (param_1, uVar2, FUN_140012CE0...) from logic.\n"
     "Omit any name you're unsure of; never invent variables. Respond with ONLY raw JSON, no markdown/backticks/explanations, in this exact shape:\n"
-    '\t{"function_name":"name","variables":{"old1":"new1", "old2":"new2"}}'
+    '\t{"function_name":"suggest_name","variables":{"old_name1":"new_name1", "old_name2":"new_name2"}}'
 )
+
+def _build_payload(user_prompt, use_cache_control):
+    system_field = (
+        [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+        if use_cache_control
+        else SYSTEM_PROMPT
+    )
+    return {
+        "model": MODEL,
+        "max_tokens": MAX_TOKENS,
+        "system": system_field,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+def _send_request(api_key, payload):
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(API_URL, data=body)
+    request.add_header("content-type", "application/json")
+    request.add_header("x-api-key", api_key)
+    request.add_header("anthropic-version", ANTHROPIC_VERSION)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read())
 
 # Read Claude API Key in .api file
 def load_api_key(path):
@@ -63,35 +93,39 @@ def call_claude(api_key, decompiled_code, function_name):
         % (function_name, decompiled_code)
     )
 
-    payload = {
-        "model": MODEL,
-        "max_tokens": MAX_TOKENS,
-        "system": SYSTEM_PROMPT,
-        "messages": [
-            {"role": "user", "content": user_prompt}
-        ],
-    }
+    use_cache = _CACHE_CONTROL_STATE["supported"] is not False
+    try:
+        data = _send_request(api_key, _build_payload(user_prompt, use_cache))
+    except urllib.error.HTTPError as e:
+        if use_cache:
+            # cache_control itself may be rejected by a future/older API version,
+            # region, or account tier. Fall back to a plain system string and
+            # keep the pipeline running instead of aborting the whole run.
+            print(" [Caution] cache_control request rejected (HTTP %s). "
+                  "Falling back to non-cached system prompt." % e.code)
+            _CACHE_CONTROL_STATE["supported"] = False
+            data = _send_request(api_key, _build_payload(user_prompt, use_cache_control=False))
+        else:
+            raise  # already fell back once; this is a real API error
 
-    body = json.dumps(payload).encode("utf-8")
+    # Optional: surface cache effectiveness in the log, without failing the run
+    # if the usage fields are ever renamed/removed by a future API version.
+    try:
+        usage = data.get("usage", {})
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        cache_write = usage.get("cache_creation_input_tokens", 0)
+        if cache_read or cache_write:
+            print(" [Cache] read=%d write=%d tokens" % (cache_read, cache_write))
+    except Exception:
+        pass  # never let usage-logging break the actual rename pipeline
 
-    request = urllib.request.Request(API_URL, data=body)
-    request.add_header("content-type", "application/json")
-    request.add_header("x-api-key", api_key)
-    request.add_header("anthropic-version", ANTHROPIC_VERSION)
-
-    with urllib.request.urlopen(request, timeout=60) as response:
-        raw = response.read()
-
-    data = json.loads(raw)
     text_parts = [block["text"] for block in data.get("content", []) if block.get("type") == "text"]
     combined = "".join(text_parts).strip()
-
     if combined.startswith("```"):
         combined = combined.strip("`")
         if combined.lower().startswith("json"):
             combined = combined[4:]
         combined = combined.strip()
-
     return json.loads(combined)
 
 
