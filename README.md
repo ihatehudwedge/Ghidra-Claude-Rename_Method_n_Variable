@@ -23,7 +23,7 @@ It's designed to work **without installing any third-party extension in Ghidra**
 - Python 3.8+ installed on the system (no extra pip packages required)
 - A Claude API key (pay-as-you-go, issued at `platform.claude.com`)
 
-## 1. Claude API 키 발급
+## 1. Get a Claude API key
 
 1. Go to [platform.claude.com](https://platform.claude.com) and sign up / log in with an email address (this account doesn't need to match your Claude.ai account).
 2. Register a payment method under **Billing**. If you skip this, requests will be rejected even after you create a key.
