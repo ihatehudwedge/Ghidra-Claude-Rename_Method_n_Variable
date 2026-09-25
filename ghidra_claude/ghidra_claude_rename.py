@@ -10,9 +10,6 @@ from ghidra.util.task import ConsoleTaskMonitor
 from ghidra.program.model.symbol import SourceType
 from ghidra.program.model.pcode import HighFunctionDBUtil
 
-# ---------------------------------------------------------------------------
-# 설정값
-# ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "ghidra_claude_rename.py")))
 API_KEY_FILE = os.path.join(SCRIPT_DIR, ".api")
 SYSTEM_PROMPT_FILE = os.path.join(SCRIPT_DIR, "ghidra_prompt_advanced.md")
@@ -25,6 +22,13 @@ MAX_TOKENS = 1024
 MAX_FUNCTIONS = 50  # Cost safety margin: the upper limit on the number of functions processed per execution
 SKIP_LIBRARY_FUNCTIONS = True
 DECOMPILE_TIMEOUT_SECONDS = 30
+
+TRAVERSE_FROM_ENTRYPOINTS = True
+
+INCLUDE_UNREACHED_FUNCTIONS = False
+
+# Only functions still carrying Ghidra's auto-generated name are renamed.
+FUNCTION_NAME_PREFIX = "FUN_"
 
 # Prompt caching: this system prompt is long enough (well above the ~1,024
 # token minimum for Sonnet 4.6) to actually benefit from caching. Using a
@@ -191,6 +195,70 @@ def apply_suggestions(program, function, high_function, suggestions):
         program.endTransaction(tx_id, success)
 
 
+def get_entry_functions(program, function_manager):
+    entry_functions = []
+    seen = set()
+
+    symbol_table = program.getSymbolTable()
+    entry_iter = symbol_table.getExternalEntryPointIterator()
+    for addr in entry_iter:
+        func = function_manager.getFunctionAt(addr)
+        if func is not None and func.getEntryPoint() not in seen:
+            entry_functions.append(func)
+            seen.add(func.getEntryPoint())
+
+    if not entry_functions:
+        all_funcs = function_manager.getFunctions(True)
+        for func in all_funcs:
+            entry_functions.append(func)
+            break
+
+    return entry_functions
+
+
+def collect_functions_bfs(program, function_manager, monitor):
+    entry_functions = get_entry_functions(program, function_manager)
+
+    visited = set()
+    order = []
+    queue = list(entry_functions)
+    idx = 0
+
+    while idx < len(queue):
+        func = queue[idx]
+        idx += 1
+
+        entry_addr = func.getEntryPoint()
+        if entry_addr in visited:
+            continue
+        visited.add(entry_addr)
+
+        is_library_like = func.isThunk() or func.isExternal()
+        if not (SKIP_LIBRARY_FUNCTIONS and is_library_like):
+            order.append(func)
+
+        try:
+            callees = func.getCalledFunctions(monitor)
+        except Exception:
+            callees = []
+
+        for callee in sorted(callees, key=lambda f: f.getEntryPoint()):
+            if callee.getEntryPoint() not in visited:
+                queue.append(callee)
+
+    if INCLUDE_UNREACHED_FUNCTIONS:
+        for func in function_manager.getFunctions(True):
+            entry_addr = func.getEntryPoint()
+            if entry_addr in visited:
+                continue
+            visited.add(entry_addr)
+            is_library_like = func.isThunk() or func.isExternal()
+            if not (SKIP_LIBRARY_FUNCTIONS and is_library_like):
+                order.append(func)
+
+    return order
+
+
 def run():
     api_key = load_api_key(API_KEY_FILE)
     program = currentProgram  # Global Variable (not callback function)
@@ -201,7 +269,12 @@ def run():
     decomp_iface.openProgram(program)
 
     function_manager = program.getFunctionManager()
-    functions = list(function_manager.getFunctions(True))
+
+    if TRAVERSE_FROM_ENTRYPOINTS:
+        functions = collect_functions_bfs(program, function_manager, monitor)
+        print("Entry point Callgraph BFS Loop: %d (Processing Sequence) " % len(functions))
+    else:
+        functions = list(function_manager.getFunctions(True))
 
     processed = 0
     try:
@@ -211,6 +284,9 @@ def run():
                 break
 
             if SKIP_LIBRARY_FUNCTIONS and (function.isThunk() or function.isExternal()):
+                continue
+
+            if not function.getName().startswith(FUNCTION_NAME_PREFIX):
                 continue
 
             print("Processing: %s @ %s" % (function.getName(), function.getEntryPoint()))
